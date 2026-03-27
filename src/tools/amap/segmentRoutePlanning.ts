@@ -100,6 +100,13 @@ const amapApiBaseUrl = (process.env.AMAP_API_BASE_URL ?? "https://restapi.amap.c
   /\/+$/,
   "",
 );
+const amapMaxConcurrency = Math.max(Number(process.env.AMAP_MAX_CONCURRENCY ?? 5), 1);
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function withOptionalFields<T extends object>(base: T, extras: Record<string, unknown>) {
   return {
@@ -139,28 +146,37 @@ async function callAmap(pathname: string, params: Record<string, string | undefi
     throw new Error("AMAP_API_KEY is missing");
   }
 
-  const url = new URL(pathname, amapApiBaseUrl);
-  url.searchParams.set("key", amapApiKey);
-  url.searchParams.set("output", "json");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const url = new URL(pathname, amapApiBaseUrl);
+    url.searchParams.set("key", amapApiKey);
+    url.searchParams.set("output", "json");
 
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      url.searchParams.set(key, value);
+    for (const [key, value] of Object.entries(params)) {
+      if (value) {
+        url.searchParams.set(key, value);
+      }
     }
-  }
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-  if (!response.ok) {
-    const details = await response.text();
-    throw new Error(`Amap request failed ${response.status}: ${details}`);
-  }
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Amap request failed ${response.status}: ${details}`);
+    }
 
-  const data = await response.json();
-  if (String(data?.status) !== "1") {
-    throw new Error(`Amap API error: ${String(data?.info ?? "unknown error")}`);
-  }
+    const data = await response.json();
+    if (String(data?.status) === "1") {
+      return data;
+    }
 
-  return data;
+    const info = String(data?.info ?? "unknown error");
+    const isQpsLimited = info.includes("CUQPS_HAS_EXCEEDED_THE_LIMIT");
+    if (!isQpsLimited || attempt === 2) {
+      throw new Error(`Amap API error: ${info}`);
+    }
+
+    await sleep(300 * (attempt + 1));
+  }
+  throw new Error("Amap API error: unknown error");
 }
 
 async function geocodePlace(name: string, city?: string) {
@@ -244,6 +260,36 @@ async function resolvePoint(name: string, location: string | undefined, city: st
   return geocodePlace(name, city);
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const currentIndex = cursor;
+      cursor += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+
+      const item = items[currentIndex];
+      if (item === undefined) {
+        continue;
+      }
+      results[currentIndex] = await worker(item, currentIndex);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, Math.max(items.length, 1)) }, () => runWorker()),
+  );
+  return results;
+}
+
 export async function planSegmentRoutes(input: {
   segments: RoutePlanningSegmentInput[];
   city?: string;
@@ -276,8 +322,10 @@ export async function planSegmentRoutes(input: {
     return task;
   };
 
-  const plannedSegments = await Promise.all(
-    segments.map(async (segment) => {
+  const plannedSegments = await mapWithConcurrency(
+    segments,
+    amapMaxConcurrency,
+    async (segment) => {
       const fromPlaceName = toOptionalString(segment.from_place_name);
       const toPlaceName = toOptionalString(segment.to_place_name);
       if (!fromPlaceName || !toPlaceName) {
@@ -352,7 +400,7 @@ export async function planSegmentRoutes(input: {
           },
         ) as PlannedSegment;
       }
-    }),
+    },
   );
 
   return {

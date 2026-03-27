@@ -16,12 +16,22 @@ function startHeartbeat(
   res: ServerResponse,
   getStage: () => string,
 ) {
+  const stageMessages: Record<string, string> = {
+    thinking: "正在分析你的问题",
+    searching_guides: "正在检索攻略来源",
+    extracting_places: "正在提取攻略中的地点与路线",
+    extracting_candidate: "正在并发分析攻略内容",
+    fetching_weather: "正在获取天气数据",
+    responding: "正在生成最终回复",
+    result: "正在整理结果",
+  };
   const startedAt = Date.now();
   return setInterval(() => {
+    const stage = getStage();
     writeSse(res, "ping", {
-      stage: getStage(),
+      stage,
       elapsed_seconds: Math.floor((Date.now() - startedAt) / 1000),
-      message: "still_processing",
+      message: stageMessages[stage] ?? "正在处理中",
     });
   }, 10_000);
 }
