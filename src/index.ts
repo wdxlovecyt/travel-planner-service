@@ -48,12 +48,101 @@ type RoutePlanRequestBody = {
 type GuideTextRequestBody = {
   message?: string;
   guide_text?: string;
+  images?: string[];
   title?: string;
   url?: string;
   site_name?: string;
   published_at?: string;
   primary_location?: string;
 };
+
+async function fileToDataUrl(file: File) {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const mimeType = file.type || "application/octet-stream";
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
+}
+
+function startSseHeartbeat(
+  res: import("node:http").ServerResponse,
+  getStage: () => string,
+) {
+  const startedAt = Date.now();
+  return setInterval(() => {
+    res.write("event: ping\n");
+    res.write(
+      `data: ${JSON.stringify({
+        stage: getStage(),
+        elapsed_seconds: Math.floor((Date.now() - startedAt) / 1000),
+        message: "正在处理中",
+      })}\n\n`,
+    );
+  }, 10_000);
+}
+
+async function readGuideTextBody(
+  req: import("node:http").IncomingMessage,
+): Promise<GuideTextRequestBody> {
+  const contentType = req.headers["content-type"] ?? "";
+  if (contentType.toLowerCase().startsWith("text/plain")) {
+    return { guide_text: await readRawBody(req) };
+  }
+
+  if (contentType.toLowerCase().includes("multipart/form-data")) {
+    const request = new Request(
+      "http://localhost/guide-text",
+      {
+        method: req.method ?? "POST",
+        headers: req.headers as Record<string, string>,
+        body: req as never,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+    );
+    const formData = await request.formData();
+    const body: GuideTextRequestBody = {};
+
+    const assignString = (
+      name:
+        | "guide_text"
+        | "message"
+        | "title"
+        | "url"
+        | "site_name"
+        | "published_at"
+        | "primary_location",
+    ) => {
+      const value = formData.get(name);
+      if (typeof value === "string" && value.trim()) {
+        body[name] = value;
+      }
+    };
+
+    assignString("guide_text");
+    assignString("message");
+    assignString("title");
+    assignString("url");
+    assignString("site_name");
+    assignString("published_at");
+    assignString("primary_location");
+
+    const imageEntries = [...formData.getAll("images"), ...formData.getAll("image")];
+    const images = await Promise.all(
+      imageEntries.map(async (entry) => {
+        if (typeof entry === "string") {
+          return entry.trim();
+        }
+        return fileToDataUrl(entry);
+      }),
+    );
+
+    if (images.some((image) => image.length > 0)) {
+      body.images = images.filter((image) => image.length > 0);
+    }
+
+    return body;
+  }
+
+  return (await readJsonBody(req)) as GuideTextRequestBody;
+}
 
 const server = createServer(async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -120,7 +209,6 @@ const server = createServer(async (req, res) => {
       const response = await planSegmentRoutes({
         segments: Array.isArray(body.segments) ? body.segments : [],
         ...(typeof body.city === "string" ? { city: body.city } : {}),
-        mode: "walking",
       });
 
       res.statusCode = 200;
@@ -138,13 +226,12 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/guide-text") {
     try {
-      const contentType = req.headers["content-type"] ?? "";
-      const isPlainText = contentType.toLowerCase().startsWith("text/plain");
-      const body = isPlainText
-        ? { guide_text: await readRawBody(req) }
-        : ((await readJsonBody(req)) as GuideTextRequestBody);
+      const body = await readGuideTextBody(req);
       const response = await runGuideTextChat({
         guide_text: typeof body.guide_text === "string" ? body.guide_text : "",
+        ...(Array.isArray(body.images)
+          ? { images: body.images.filter((item): item is string => typeof item === "string") }
+          : {}),
         ...(typeof body.message === "string" ? { message: body.message } : {}),
         ...(typeof body.title === "string" ? { title: body.title } : {}),
         ...(typeof body.url === "string" ? { url: body.url } : {}),
@@ -185,17 +272,18 @@ const server = createServer(async (req, res) => {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
+    let currentStage = "thinking";
+    const heartbeat = startSseHeartbeat(res, () => currentStage);
 
     try {
-      const contentType = req.headers["content-type"] ?? "";
-      const isPlainText = contentType.toLowerCase().startsWith("text/plain");
-      const body = isPlainText
-        ? { guide_text: await readRawBody(req) }
-        : ((await readJsonBody(req)) as GuideTextRequestBody);
+      const body = await readGuideTextBody(req);
 
       writeSse("start", { message: "stream connected" });
       const response = await runGuideTextChat({
         guide_text: typeof body.guide_text === "string" ? body.guide_text : "",
+        ...(Array.isArray(body.images)
+          ? { images: body.images.filter((item): item is string => typeof item === "string") }
+          : {}),
         ...(typeof body.message === "string" ? { message: body.message } : {}),
         ...(typeof body.title === "string" ? { title: body.title } : {}),
         ...(typeof body.url === "string" ? { url: body.url } : {}),
@@ -208,9 +296,11 @@ const server = createServer(async (req, res) => {
           : {}),
       }, {
         onStatus: async (stage, message) => {
+          currentStage = stage;
           writeSse("status", { stage, message });
         },
         onResult: async (result) => {
+          currentStage = "result";
           writeSse("result", result);
         },
       });
@@ -223,6 +313,7 @@ const server = createServer(async (req, res) => {
       });
       writeSse("done", { ok: false });
     } finally {
+      clearInterval(heartbeat);
       res.end();
     }
     return;

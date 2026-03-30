@@ -2,6 +2,7 @@ import {
   callDeepSeek,
   streamDeepSeekText,
 } from "./deepseek.js";
+import { streamGlmText, type GlmContentPart, type GlmMessage } from "./glm.js";
 import {
   collectTravelGuideSearch,
   searchTravelGuideByPlace,
@@ -206,6 +207,63 @@ function buildStreamingExtractionMessages(
   ];
 }
 
+function buildStreamingVisionExtractionMessages(
+  query: string,
+  primaryLocation: string,
+  guideText: string,
+  images: string[],
+): GlmMessage[] {
+  const userContent: GlmContentPart[] = [];
+
+  if (guideText.trim()) {
+    userContent.push({
+      type: "text",
+      text: JSON.stringify(
+        {
+          query,
+          primary_location: primaryLocation,
+          guide_text: guideText,
+          constraints: [
+            "必须先输出一行 meta",
+            "如果输入内容不是旅游攻略、游记、行程图、路线图或景点安排，meta 和 done 中的 is_relevant_guide 必须为 false，且不要输出 place",
+            "如果图片或文本里出现 Day1/Day2/Day3（或 第一天/第二天/第三天）等日程信息，尽量完整提取所有天的地点",
+            "places 必须按完整行程顺序输出",
+            "如果存在往返、回酒店或重复经过同一地点，必须保留重复地名，不要去重",
+            "如果文本或图片里包含某个地点的相关建议，尽量放进 advice",
+            "如果文本或图片里包含从当前地点到下一地点的相关建议，尽量放进 next_segment_advice",
+            "每识别出一个明确地名就立刻输出一行 place",
+            "name 必须是明确地名，避免抽象词/泛称",
+            "最后必须输出一行 done",
+          ],
+        },
+        null,
+        0,
+      ),
+    });
+  }
+
+  userContent.push(
+    ...images.map((image) => ({
+      type: "image_url" as const,
+      image_url: {
+        url: image,
+      },
+    })),
+  );
+
+  return [
+    {
+      role: "system",
+      content:
+        "你是旅行规划助手。请直接阅读用户提供的攻略文本和图片，边分析边输出 JSON Lines，每行一个 JSON 对象，不要输出 markdown 或解释。先尽快输出 meta，再每识别到一个地点就立刻输出一个 place，最后输出 done。允许的格式只有：{\"type\":\"meta\",\"is_relevant_guide\":true}, {\"type\":\"place\",\"name\":\"地名\",\"evidence\":\"证据\",\"day\":1,\"advice\":\"地点建议\",\"next_segment_advice\":\"去下一站的建议\"}, {\"type\":\"done\",\"is_relevant_guide\":true}。",
+    },
+    {
+      role: "user",
+      content: userContent,
+    },
+  ];
+}
+
 function normalizeLlmRoute(
   route: Omit<LLMRoute, "candidate_index"> | undefined,
   candidateIndex: number,
@@ -361,6 +419,138 @@ async function streamRouteExtraction(
   };
 
   const fullText = await streamDeepSeekText(messages, async (delta) => {
+    lineBuffer += delta;
+
+    let newlineIndex = lineBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = lineBuffer.slice(0, newlineIndex);
+      lineBuffer = lineBuffer.slice(newlineIndex + 1);
+      await consumeLine(line);
+      newlineIndex = lineBuffer.indexOf("\n");
+    }
+  });
+
+  if (lineBuffer.trim()) {
+    await consumeLine(lineBuffer);
+  }
+
+  if (draftPlaces.length === 0 && fullText.trim()) {
+    const parsed = safeJsonParse(fullText) as { route?: Omit<LLMRoute, "candidate_index"> } | null;
+    return normalizeLlmRoute(parsed?.route, progress.current - 1);
+  }
+
+  return normalizeLlmRoute(
+    {
+      places: draftPlaces,
+      ...(typeof isRelevantGuide === "boolean" ? { is_relevant_guide: isRelevantGuide } : {}),
+    },
+    progress.current - 1,
+  );
+}
+
+async function streamVisionRouteExtraction(
+  query: string,
+  primaryLocation: string,
+  guideText: string,
+  images: string[],
+  candidate: GuideSearchResult,
+  progress: { current: number; total: number },
+  generatedAt: string,
+  onRouteUpdate?: (
+    route: RoutePlanResponse,
+    progress: { current: number; total: number },
+    done?: boolean,
+  ) => void | Promise<void>,
+): Promise<LLMRoute | undefined> {
+  const messages =
+    images.length > 0
+      ? buildStreamingVisionExtractionMessages(query, primaryLocation, guideText, images)
+      : (buildStreamingExtractionMessages(query, primaryLocation, {
+          ...candidate,
+          snippet: guideText,
+        }) as GlmMessage[]);
+  const draftPlaces: Array<{
+    name: string;
+    evidence?: string;
+    day?: number;
+    advice?: string;
+    next_segment_advice?: string;
+  }> = [];
+  let isRelevantGuide: boolean | undefined;
+  let lineBuffer = "";
+
+  const emitRouteUpdate = async (done?: boolean) => {
+    if (draftPlaces.length === 0 || isRelevantGuide === false) {
+      return;
+    }
+
+    const route = buildRouteFromCandidate(
+      query,
+      candidate,
+      primaryLocation,
+      normalizeLlmRoute(
+        {
+          places: draftPlaces,
+          ...(typeof isRelevantGuide === "boolean"
+            ? { is_relevant_guide: isRelevantGuide }
+            : {}),
+        },
+        progress.current - 1,
+      ),
+      generatedAt,
+      "direct_text_only",
+    );
+    if (!route) {
+      return;
+    }
+
+    await onRouteUpdate?.(route, progress, done);
+  };
+
+  const consumeLine = async (line: string) => {
+    const event = parseStreamEventLine(line);
+    if (!event) {
+      return;
+    }
+
+    if (event.type === "meta") {
+      isRelevantGuide = event.is_relevant_guide;
+      return;
+    }
+
+    if (event.type === "place") {
+      const name = (event.name ?? "").trim();
+      if (name.length < 2) {
+        return;
+      }
+      draftPlaces.push({
+        name,
+        ...(typeof event.evidence === "string" && event.evidence.trim()
+          ? { evidence: event.evidence.trim() }
+          : {}),
+        ...(typeof event.day === "number" && Number.isFinite(event.day)
+          ? { day: event.day }
+          : {}),
+        ...(typeof event.advice === "string" && event.advice.trim()
+          ? { advice: event.advice.trim() }
+          : {}),
+        ...(typeof event.next_segment_advice === "string" && event.next_segment_advice.trim()
+          ? { next_segment_advice: event.next_segment_advice.trim() }
+          : {}),
+      });
+      await emitRouteUpdate(false);
+      return;
+    }
+
+    if (event.type === "done") {
+      if (typeof event.is_relevant_guide === "boolean") {
+        isRelevantGuide = event.is_relevant_guide;
+      }
+      await emitRouteUpdate(true);
+    }
+  };
+
+  const fullText = await streamGlmText(messages, async (delta) => {
     lineBuffer += delta;
 
     let newlineIndex = lineBuffer.indexOf("\n");
@@ -670,9 +860,14 @@ export async function runGuideTextChat(
   input: DirectGuideTextInput,
   callbacks?: GuideProgressCallbacks,
 ): Promise<RoutePlanBatchResponse> {
-  const guideText = input.guide_text.trim();
-  if (!guideText) {
+  const guideText = (input.guide_text ?? "").trim();
+  const images = Array.isArray(input.images) ? input.images.map((image) => image.trim()).filter(Boolean) : [];
+  if (!guideText && images.length === 0) {
     throw new Error("guide_text is required");
+  }
+
+  if (!callbacks && images.length > 0) {
+    throw new Error("images are only supported on /guide-text/stream");
   }
 
   const query = (input.message ?? "").trim() || "根据提供的攻略文本生成路线";
@@ -690,9 +885,11 @@ export async function runGuideTextChat(
     };
 
     await callbacks.onStatus?.("extracting_places", "正在提取攻略中的地点与路线");
-    const llmRoute = await streamRouteExtraction(
+    const llmRoute = await streamVisionRouteExtraction(
       query,
       primaryLocation,
+      guideText,
+      images,
       candidate,
       { current: 1, total: 1 },
       nowIso,

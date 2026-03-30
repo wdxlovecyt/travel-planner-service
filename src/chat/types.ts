@@ -148,7 +148,8 @@ export type GuideExtractionInput = {
 };
 
 export type DirectGuideTextInput = {
-  guide_text: string;
+  guide_text?: string;
+  images?: string[];
   message?: string;
   title?: string;
   url?: string;
