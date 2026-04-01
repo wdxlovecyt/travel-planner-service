@@ -1,4 +1,6 @@
-export type ChatMessage = {
+import type { GuideSearchResult } from "../tools/travelGuideSearch/types";
+
+export type ModelMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   tool_calls?: unknown;
@@ -140,31 +142,25 @@ export type GuideExtractionInput = {
   query: string;
   source?: string;
   strategy?: "zhihu_mafengwo_only" | "direct_text_only";
-  results?: import("../tools/travelGuideSearch/travelGuideSearch.js").GuideSearchResult[];
+  results?: GuideSearchResult[];
   total_candidates?: number;
   guide_search_url?: string;
   primary_location?: string;
   rate_limited?: boolean;
 };
 
-export type DirectGuideTextInput = {
-  guide_text?: string;
+export type DirectGuideInput = {
+  content?: string;
   images?: string[];
-  message?: string;
-  title?: string;
-  url?: string;
-  site_name?: string;
-  published_at?: string;
-  primary_location?: string;
 };
 
-export type ChatComboResult = {
-  type: "chat_combo";
+export type PlanComboResult = {
+  type: "plan_combo";
   reply: string;
   route_plan: RoutePlanBatchResponse;
 };
 
-export type ChatResult = string | RoutePlanResponse | RoutePlanBatchResponse | ChatComboResult;
+export type PlanResult = string | RoutePlanResponse | RoutePlanBatchResponse | PlanComboResult;
 
 export type WeatherStreamCallbacks = {
   onStatus?: (stage: string, message: string) => void | Promise<void>;

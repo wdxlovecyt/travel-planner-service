@@ -1,35 +1,9 @@
-type GlmContentPart =
-  | {
-      type: "text";
-      text: string;
-    }
-  | {
-      type: "image_url";
-      image_url: {
-        url: string;
-      };
-    };
-
-type GlmMessage = {
-  role: "system" | "user" | "assistant";
-  content: string | GlmContentPart[];
-};
-
-type GlmStreamChunk = {
-  choices?: Array<{
-    delta?: {
-      content?: unknown;
-    };
-  }>;
-};
-
-type GlmCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: unknown;
-    };
-  }>;
-};
+import type {
+  GlmCompletionResponse,
+  GlmContentPart,
+  GlmMessage,
+  GlmStreamChunk,
+} from "./glmTypes";
 
 const glmApiKey = process.env.GLM_API_KEY ?? process.env.ZHIPU_API_KEY;
 const glmBaseUrl = (process.env.GLM_BASE_URL ?? "https://open.bigmodel.cn/api/paas/v4").replace(
@@ -177,4 +151,4 @@ export async function callGlmText(messages: GlmMessage[]) {
   return extractDeltaText(data.choices?.[0]?.message?.content);
 }
 
-export type { GlmContentPart, GlmMessage };
+export type { GlmContentPart, GlmMessage } from "./glmTypes";

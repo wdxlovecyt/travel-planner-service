@@ -1,6 +1,6 @@
-import { callDeepSeek, streamDeepSeekText, type ChatMessage } from "./deepseek.js";
-import { getWeather } from "../tools/weather/weather.js";
-import type { WeatherStreamCallbacks } from "./types.js";
+import { callDeepSeek, streamDeepSeekText, type ModelMessage } from "./deepseek";
+import { getWeather } from "../tools/weather/weather";
+import type { WeatherStreamCallbacks } from "./types";
 
 export const WEATHER_TOOL = {
   type: "function",
@@ -33,7 +33,7 @@ export async function runWeatherToolCall(args: unknown) {
   });
 }
 
-export async function runWeatherChat(userPrompt: string): Promise<string> {
+export async function runWeatherResponse(userPrompt: string): Promise<string> {
   const tools = [WEATHER_TOOL];
 
   const initialCompletion = await callDeepSeek([{ role: "user", content: userPrompt }], tools);
@@ -51,7 +51,7 @@ export async function runWeatherChat(userPrompt: string): Promise<string> {
 
   const weather = await runWeatherToolCall(JSON.parse(toolCall.function.arguments ?? "{}"));
 
-  const followUpMessages: ChatMessage[] = [
+  const followUpMessages: ModelMessage[] = [
     { role: "user", content: userPrompt },
     {
       role: "assistant",
@@ -69,7 +69,7 @@ export async function runWeatherChat(userPrompt: string): Promise<string> {
   return toolCompletion.choices?.[0]?.message?.content ?? "";
 }
 
-export async function runWeatherChatStream(
+export async function runWeatherResponseStream(
   userPrompt: string,
   callbacks: WeatherStreamCallbacks,
 ): Promise<string> {
@@ -100,7 +100,7 @@ export async function runWeatherChatStream(
   await callbacks.onStatus?.("fetching_weather", "正在获取天气数据");
   const weather = await runWeatherToolCall(JSON.parse(toolCall.function.arguments ?? "{}"));
 
-  const followUpMessages: ChatMessage[] = [
+  const followUpMessages: ModelMessage[] = [
     { role: "user", content: userPrompt },
     {
       role: "assistant",

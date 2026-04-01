@@ -1,19 +1,12 @@
-import type { ServerResponse } from "node:http";
-import { callDeepSeek, streamDeepSeekText, type ChatMessage, type DeepSeekToolCall } from "./deepseek.js";
-import { GUIDE_TOOL, runGuideSearchByPlace, type RoutePlanBatchResponse } from "./guideChat.js";
-import { WEATHER_TOOL, runWeatherToolCall } from "./weatherChat.js";
+import { ZodError } from "zod";
+import { callDeepSeek, streamDeepSeekText, type ModelMessage, type DeepSeekToolCall } from "./deepseek";
+import { GUIDE_TOOL, runGuideSearchByPlace, type RoutePlanBatchResponse } from "./guidePlan";
+import { WEATHER_TOOL, runWeatherToolCall } from "./weatherPlan";
 
-function writeSse(
-  res: ServerResponse,
-  event: string,
-  data: unknown,
-) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-}
+export type SseWriter = (event: string, data: unknown) => void | Promise<void>;
 
 function startHeartbeat(
-  res: ServerResponse,
+  write: SseWriter,
   getStage: () => string,
 ) {
   const stageMessages: Record<string, string> = {
@@ -28,7 +21,7 @@ function startHeartbeat(
   const startedAt = Date.now();
   return setInterval(() => {
     const stage = getStage();
-    writeSse(res, "ping", {
+    void write("ping", {
       stage,
       elapsed_seconds: Math.floor((Date.now() - startedAt) / 1000),
       message: stageMessages[stage] ?? "正在处理中",
@@ -41,7 +34,7 @@ function parseToolCalls(message: { tool_calls?: unknown } | undefined): DeepSeek
   return Array.isArray(rawToolCalls) ? (rawToolCalls as DeepSeekToolCall[]) : [];
 }
 
-function buildChatMessages(userPrompt: string): ChatMessage[] {
+function buildModelMessages(userPrompt: string): ModelMessage[] {
   return [
     {
       role: "system",
@@ -56,7 +49,7 @@ function buildToolFollowUpMessages(
   userPrompt: string,
   toolCalls: DeepSeekToolCall[],
   toolResults: Array<{ toolCallId?: string; content: string }>,
-): ChatMessage[] {
+): ModelMessage[] {
   return [
     { role: "user", content: userPrompt },
     {
@@ -72,27 +65,27 @@ function buildToolFollowUpMessages(
   ];
 }
 
-export async function runChatStream(
+export async function runPlanStream(
   userPrompt: string,
-  res: ServerResponse,
+  write: SseWriter,
 ) {
-  writeSse(res, "start", { message: "stream connected" });
+  await write("start", { message: "stream connected" });
   let currentStage = "thinking";
-  const heartbeat = startHeartbeat(res, () => currentStage);
+  const heartbeat = startHeartbeat(write, () => currentStage);
 
   try {
-    writeSse(res, "status", { stage: "thinking", message: "正在分析问题" });
-    const completion = await callDeepSeek(buildChatMessages(userPrompt), [GUIDE_TOOL, WEATHER_TOOL]);
+    await write("status", { stage: "thinking", message: "正在分析问题" });
+    const completion = await callDeepSeek(buildModelMessages(userPrompt), [GUIDE_TOOL, WEATHER_TOOL]);
     const assistantMessage = completion.choices?.[0]?.message;
     const toolCalls = parseToolCalls(assistantMessage);
 
     if (toolCalls.length === 0) {
       const reply = assistantMessage?.content ?? "";
       if (reply) {
-        writeSse(res, "delta", { content: reply });
+        await write("delta", { content: reply });
       }
-      writeSse(res, "result", { reply });
-      writeSse(res, "done", { ok: true });
+      await write("result", { reply });
+      await write("done", { ok: true });
       return;
     }
 
@@ -111,11 +104,11 @@ export async function runChatStream(
         callbacks: {
           onStatus: async (stage, message) => {
             currentStage = stage;
-            writeSse(res, "status", { stage, message });
+            await write("status", { stage, message });
           },
           onResult: async (result) => {
             currentStage = "result";
-            writeSse(res, "result", result);
+            await write("result", result);
           },
         },
       });
@@ -123,15 +116,15 @@ export async function runChatStream(
 
     if (weatherToolCall) {
       currentStage = "fetching_weather";
-      writeSse(res, "status", { stage: "fetching_weather", message: "正在获取天气数据" });
+      await write("status", { stage: "fetching_weather", message: "正在获取天气数据" });
       weatherOutput = await runWeatherToolCall(
         JSON.parse(weatherToolCall.function?.arguments ?? "{}"),
       );
     }
 
     if (routePlan && !weatherToolCall) {
-      writeSse(res, "result", routePlan);
-      writeSse(res, "done", { ok: true });
+      await write("result", routePlan);
+      await write("done", { ok: true });
       return;
     }
 
@@ -150,32 +143,38 @@ export async function runChatStream(
     }
 
     currentStage = "responding";
-    writeSse(res, "status", { stage: "responding", message: "正在生成回复" });
+    await write("status", { stage: "responding", message: "正在生成回复" });
     const reply = await streamDeepSeekText(
       buildToolFollowUpMessages(userPrompt, toolCalls, toolResults),
       async (delta) => {
-        writeSse(res, "delta", { content: delta });
+        await write("delta", { content: delta });
       },
     );
 
     if (routePlan) {
-      writeSse(res, "result", {
-        type: "chat_combo",
+      await write("result", {
+        type: "plan_combo",
         reply,
         route_plan: routePlan,
       });
     } else {
-      writeSse(res, "result", { reply });
+      await write("result", { reply });
     }
-    writeSse(res, "done", { ok: true });
+    await write("done", { ok: true });
   } finally {
     clearInterval(heartbeat);
   }
 }
 
-export function writeStreamError(res: ServerResponse, error: unknown) {
-  writeSse(res, "error", {
-    error: error instanceof Error ? error.message : "Unknown error",
+export async function writePlanStreamError(write: SseWriter, error: unknown) {
+  const message =
+    error instanceof ZodError
+      ? error.issues.map((issue) => issue.message).join("; ")
+      : error instanceof Error
+        ? error.message
+        : "Unknown error";
+  await write("error", {
+    error: message,
   });
-  writeSse(res, "done", { ok: false });
+  await write("done", { ok: false });
 }

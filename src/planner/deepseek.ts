@@ -1,6 +1,6 @@
-import type { ChatMessage, DeepSeekToolCall } from "./types.js";
+import type { ModelMessage, DeepSeekToolCall } from "./types";
 
-export type { ChatMessage, DeepSeekToolCall } from "./types.js";
+export type { ModelMessage, DeepSeekToolCall } from "./types";
 
 type DeepSeekStreamChunk = {
   choices?: Array<{
@@ -18,7 +18,7 @@ if (!apiKey) {
   process.exit(1);
 }
 
-export async function callDeepSeek(messages: ChatMessage[], tools?: unknown) {
+export async function callDeepSeek(messages: ModelMessage[], tools?: unknown) {
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -41,7 +41,7 @@ export async function callDeepSeek(messages: ChatMessage[], tools?: unknown) {
 }
 
 export async function streamDeepSeekText(
-  messages: ChatMessage[],
+  messages: ModelMessage[],
   onDelta: (delta: string) => void | Promise<void>,
 ) {
   const response = await fetch("https://api.deepseek.com/chat/completions", {

@@ -1,17 +1,17 @@
 import {
   callDeepSeek,
   streamDeepSeekText,
-} from "./deepseek.js";
-import { streamGlmText, type GlmContentPart, type GlmMessage } from "./glm.js";
+} from "./deepseek";
+import { streamGlmText, type GlmContentPart, type GlmMessage } from "./glm";
 import {
   collectTravelGuideSearch,
   searchTravelGuideByPlace,
-  type GuideSearchResult,
-} from "../tools/travelGuideSearch/travelGuideSearch.js";
+} from "../tools/travelGuideSearch/travelGuideSearch";
+import type { GuideSearchResult } from "../tools/travelGuideSearch/types";
 import type {
-  ChatMessage,
+  ModelMessage,
   DeepSeekToolCall,
-  DirectGuideTextInput,
+  DirectGuideInput,
   GuideExtractionInput,
   GuideProgressCallbacks,
   GuideRunOptions,
@@ -21,13 +21,13 @@ import type {
   RoutePlanResponse,
   RoutePlace,
   RouteSegment,
-} from "./types.js";
+} from "./types";
 export type {
-  DirectGuideTextInput,
+  DirectGuideInput,
   GuideRunOptions,
   RoutePlanBatchResponse,
   RoutePlanResponse,
-} from "./types.js";
+} from "./types";
 
 export const GUIDE_TOOL = {
   type: "function",
@@ -106,7 +106,7 @@ function buildExtractionMessages(
   query: string,
   primaryLocation: string,
   candidate: GuideSearchResult,
-): ChatMessage[] {
+): ModelMessage[] {
   return [
     {
       role: "system",
@@ -166,7 +166,7 @@ function buildStreamingExtractionMessages(
   query: string,
   primaryLocation: string,
   candidate: GuideSearchResult,
-): ChatMessage[] {
+): ModelMessage[] {
   return [
     {
       role: "system",
@@ -222,7 +222,7 @@ function buildStreamingVisionExtractionMessages(
         {
           query,
           primary_location: primaryLocation,
-          guide_text: guideText,
+          content: guideText,
           constraints: [
             "必须先输出一行 meta",
             "如果输入内容不是旅游攻略、游记、行程图、路线图或景点安排，meta 和 done 中的 is_relevant_guide 必须为 false，且不要输出 place",
@@ -856,31 +856,31 @@ async function buildRoutePlan(
   );
 }
 
-export async function runGuideTextChat(
-  input: DirectGuideTextInput,
+export async function runDirectGuidePlan(
+  input: DirectGuideInput,
   callbacks?: GuideProgressCallbacks,
 ): Promise<RoutePlanBatchResponse> {
-  const guideText = (input.guide_text ?? "").trim();
+  const guideText = (input.content ?? "").trim();
   const images = Array.isArray(input.images) ? input.images.map((image) => image.trim()).filter(Boolean) : [];
   if (!guideText && images.length === 0) {
-    throw new Error("guide_text is required");
+    throw new Error("content or images is required");
   }
 
   if (!callbacks && images.length > 0) {
-    throw new Error("images are only supported on /guide-text/stream");
+    throw new Error("images are only supported on /guide/stream");
   }
 
-  const query = (input.message ?? "").trim() || "根据提供的攻略文本生成路线";
-  const primaryLocation = (input.primary_location ?? "").trim();
+  const query = "根据提供的攻略文本生成路线";
+  const primaryLocation = "";
 
   if (callbacks) {
     const nowIso = new Date().toISOString();
     const candidate: GuideSearchResult = {
-      title: (input.title ?? "").trim() || "用户提供的攻略文本",
-      url: (input.url ?? "").trim(),
+      title: "用户提供的攻略文本",
+      url: "",
       snippet: guideText,
-      site_name: (input.site_name ?? "").trim() || "用户提供",
-      published_at: (input.published_at ?? "").trim(),
+      site_name: "用户提供",
+      published_at: "",
       source_type: "direct_text",
     };
 
@@ -942,11 +942,11 @@ export async function runGuideTextChat(
       total_candidates: 1,
       results: [
         {
-          title: (input.title ?? "").trim() || "用户提供的攻略文本",
-          url: (input.url ?? "").trim(),
+          title: "用户提供的攻略文本",
+          url: "",
           snippet: guideText,
-          site_name: (input.site_name ?? "").trim() || "用户提供",
-          published_at: (input.published_at ?? "").trim(),
+          site_name: "用户提供",
+          published_at: "",
           source_type: "direct_text",
         },
       ],
@@ -1061,13 +1061,13 @@ export async function runGuideSearchByPlace(
   return buildRoutePlan(JSON.parse(toolOutput) as GuideExtractionInput, input.userPrompt, input.callbacks);
 }
 
-export async function runGuideChat(
+export async function runGuidePlan(
   userPrompt: string,
   callbacks?: GuideProgressCallbacks,
 ): Promise<RoutePlanBatchResponse> {
   const tools = [GUIDE_TOOL];
 
-  const messages: ChatMessage[] = [
+  const messages: ModelMessage[] = [
     {
       role: "system",
       content:

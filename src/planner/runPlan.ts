@@ -1,10 +1,10 @@
-import { callDeepSeek, type ChatMessage, type DeepSeekToolCall } from "./deepseek.js";
+import { callDeepSeek, type ModelMessage, type DeepSeekToolCall } from "./deepseek";
 import {
   GUIDE_TOOL,
   runGuideSearchByPlace,
-} from "./guideChat.js";
-import { WEATHER_TOOL, runWeatherToolCall } from "./weatherChat.js";
-import type { ChatResult, RoutePlanBatchResponse } from "./types.js";
+} from "./guidePlan";
+import { WEATHER_TOOL, runWeatherToolCall } from "./weatherPlan";
+import type { PlanResult, RoutePlanBatchResponse } from "./types";
 
 const CHAT_TOOLS = [GUIDE_TOOL, WEATHER_TOOL];
 
@@ -13,7 +13,7 @@ function parseToolCalls(message: { tool_calls?: unknown } | undefined): DeepSeek
   return Array.isArray(rawToolCalls) ? (rawToolCalls as DeepSeekToolCall[]) : [];
 }
 
-function buildChatMessages(userPrompt: string): ChatMessage[] {
+function buildModelMessages(userPrompt: string): ModelMessage[] {
   return [
     {
       role: "system",
@@ -28,7 +28,7 @@ function buildToolFollowUpMessages(
   userPrompt: string,
   toolCalls: DeepSeekToolCall[],
   toolResults: Array<{ toolCallId?: string; content: string }>,
-): ChatMessage[] {
+): ModelMessage[] {
   return [
     { role: "user", content: userPrompt },
     {
@@ -44,8 +44,8 @@ function buildToolFollowUpMessages(
   ];
 }
 
-export async function runChat(userPrompt: string): Promise<ChatResult> {
-  const completion = await callDeepSeek(buildChatMessages(userPrompt), CHAT_TOOLS);
+export async function runPlan(userPrompt: string): Promise<PlanResult> {
+  const completion = await callDeepSeek(buildModelMessages(userPrompt), CHAT_TOOLS);
   const assistantMessage = completion.choices?.[0]?.message;
   const toolCalls = parseToolCalls(assistantMessage);
 
@@ -99,7 +99,7 @@ export async function runChat(userPrompt: string): Promise<ChatResult> {
 
   if (routePlan) {
     return {
-      type: "chat_combo",
+      type: "plan_combo",
       reply,
       route_plan: routePlan,
     };

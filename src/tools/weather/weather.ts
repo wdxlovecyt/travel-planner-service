@@ -1,10 +1,11 @@
 import { createPrivateKey, sign } from "node:crypto";
+import type { GetWeatherInput } from "./types";
 
 const qWeatherKey = process.env.QWEATHER_API_KEY ?? "HE2106232041391383";
-const qWeatherBaseUrl = process.env.QWEATHER_BASE_URL ?? "https://api.qweather.com";
 const qWeatherJwtPrivateKey = process.env.QWEATHER_JWT_PRIVATE_KEY;
 const qWeatherJwtKid = process.env.QWEATHER_JWT_KID;
 const qWeatherJwtProjectId = process.env.QWEATHER_JWT_PROJECT_ID;
+const qWeatherBaseUrl = process.env.QWEATHER_BASE_URL ?? "https://api.qweather.com";
 
 function toBase64Url(value: string | Buffer) {
   return Buffer.from(value)
@@ -41,7 +42,13 @@ async function callQWeather(pathname: string, params: Record<string, string>) {
     url.searchParams.set(key, value);
   });
 
-  const jwt = buildQWeatherJwt();
+  let jwt: string | null = null;
+  try {
+    jwt = buildQWeatherJwt();
+  } catch {
+    jwt = null;
+  }
+
   if (jwt) {
     headers.Authorization = `Bearer ${jwt}`;
   } else if (qWeatherKey) {
@@ -52,11 +59,6 @@ async function callQWeather(pathname: string, params: Record<string, string>) {
 
   return fetch(url, { headers });
 }
-
-type GetWeatherInput = {
-  city?: string;
-  locationId: string;
-};
 
 export async function getWeather(input: GetWeatherInput) {
   const resolvedName = input.city?.trim() || "unknown";
