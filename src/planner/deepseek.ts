@@ -11,14 +11,16 @@ type DeepSeekStreamChunk = {
   }>;
 };
 
-const apiKey = process.env.DEEPSEEK_API_KEY;
-
-if (!apiKey) {
-  console.error("DEEPSEEK_API_KEY environment variable not set");
-  process.exit(1);
+function getDeepSeekApiKey() {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    throw new Error("DEEPSEEK_API_KEY environment variable not set");
+  }
+  return apiKey;
 }
 
 export async function callDeepSeek(messages: ModelMessage[], tools?: unknown) {
+  const apiKey = getDeepSeekApiKey();
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -44,6 +46,7 @@ export async function streamDeepSeekText(
   messages: ModelMessage[],
   onDelta: (delta: string) => void | Promise<void>,
 ) {
+  const apiKey = getDeepSeekApiKey();
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
